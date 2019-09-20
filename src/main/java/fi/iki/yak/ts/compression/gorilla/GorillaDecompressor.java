@@ -2,6 +2,7 @@ package fi.iki.yak.ts.compression.gorilla;
 
 import java.util.stream.Stream;
 
+import fi.iki.yak.ts.compression.gorilla.predictors.DifferentialFCM;
 import fi.iki.yak.ts.compression.gorilla.predictors.LastValuePredictor;
 
 /**
@@ -15,10 +16,12 @@ public class GorillaDecompressor {
 
     private long blockTimestamp = 0;
     private long storedVal = 0;
+    private long storedVal2 = 0;
     private boolean endOfStream = false;
 
     private final BitInput in;
     private final ValueDecompressor decompressor;
+    private final ValueDecompressor decompressor2;
 
     public GorillaDecompressor(BitInput input) {
         this(input, new LastValuePredictor());
@@ -28,6 +31,7 @@ public class GorillaDecompressor {
         in = input;
         readHeader();
         this.decompressor = new ValueDecompressor(input, predictor);
+        this.decompressor2 = new ValueDecompressor(input, new DifferentialFCM(1024));
     }
 
     private void readHeader() {
@@ -48,6 +52,15 @@ public class GorillaDecompressor {
         return pair;
     }
 
+    public Agg readAgg() {
+        next2();
+        if(endOfStream) {
+            return null;
+        }
+        Agg agg = new Agg(storedTimestamp, storedVal, storedVal2);
+        return agg;
+    }
+
     private void next() {
         // TODO I could implement a non-streaming solution also.. is there ever a need for streaming solution?
 
@@ -59,6 +72,18 @@ public class GorillaDecompressor {
         nextTimestamp();
     }
 
+    private void next2() {
+        // TODO I could implement a non-streaming solution also.. is there ever a need for streaming solution?
+
+        if(storedTimestamp == 0) {
+            first2();
+            return;
+        }
+
+        nextTimestamp2();
+    }
+
+
     private void first() {
         // First item to read
         storedDelta = in.getLong(Compressor.FIRST_DELTA_BITS);
@@ -67,6 +92,19 @@ public class GorillaDecompressor {
             return;
         }
         storedVal = decompressor.readFirst();
+//        storedVal = in.getLong(64);
+        storedTimestamp = blockTimestamp + storedDelta;
+    }
+
+    private void first2() {
+        // First item to read
+        storedDelta = in.getLong(Compressor.FIRST_DELTA_BITS);
+        if(storedDelta == (1<<27) - 1) {
+            endOfStream = true;
+            return;
+        }
+        storedVal = decompressor.readFirst();
+        storedVal2 = decompressor2.readFirst();
 //        storedVal = in.getLong(64);
         storedTimestamp = blockTimestamp + storedDelta;
     }
@@ -109,6 +147,48 @@ public class GorillaDecompressor {
 
         storedTimestamp = storedDelta + storedTimestamp;
         storedVal = decompressor.nextValue();
+    }
+
+    private void nextTimestamp2() {
+        // Next, read timestamp
+        int readInstruction = in.nextClearBit(4);
+        long deltaDelta;
+
+        switch(readInstruction) {
+            case 0x00:
+                storedTimestamp = storedDelta + storedTimestamp;
+                storedVal = decompressor.nextValue();
+                storedVal2 = decompressor2.nextValue();
+                return;
+            case 0x02:
+                deltaDelta = in.getLong(7);
+                break;
+            case 0x06:
+                deltaDelta = in.getLong(9);
+                break;
+            case 0x0e:
+                deltaDelta = in.getLong(12);
+                break;
+            case 0x0F:
+                deltaDelta = in.getLong(32);
+                // For storage save.. if this is the last available word, check if remaining bits are all 1
+                if ((int) deltaDelta == 0xFFFFFFFF) {
+                    // End of stream
+                    endOfStream = true;
+                    return;
+                }
+                break;
+            default:
+                return;
+        }
+
+        deltaDelta++;
+        deltaDelta = decodeZigZag32((int) deltaDelta);
+        storedDelta = storedDelta + deltaDelta;
+
+        storedTimestamp = storedDelta + storedTimestamp;
+        storedVal = decompressor.nextValue();
+        storedVal2 = decompressor2.nextValue();
     }
 
     // START: From protobuf
