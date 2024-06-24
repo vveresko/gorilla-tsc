@@ -588,4 +588,47 @@ public class EncodeGorillaTest {
         assertNull(d.readPair());
     }
 
+
+    @Test
+    void testAggEncodeLargeAmountOfDataOldBuffer() throws Exception {
+        // This test should trigger ByteBuffer reallocation
+        int amountOfPoints = 100000;
+        long blockStart = LocalDateTime.now().truncatedTo(ChronoUnit.HOURS)
+                .toInstant(ZoneOffset.UTC).toEpochMilli();
+        ByteBufferBitOutput output = new ByteBufferBitOutput();
+
+        long now = blockStart + 60;
+        ByteBuffer bb = ByteBuffer.allocateDirect(amountOfPoints * 3*Long.BYTES);
+
+        for(int i = 0; i < amountOfPoints; i++) {
+            bb.putLong(now + i*60);
+            bb.putLong(ThreadLocalRandom.current().nextLong(Integer.MAX_VALUE));
+            bb.putLong(ThreadLocalRandom.current().nextLong(Integer.MAX_VALUE));
+        }
+
+        GorillaCompressor c = new GorillaCompressor(blockStart, output);
+
+        bb.flip();
+
+        for(int j = 0; j < amountOfPoints; j++) {
+            c.addAgg(new Agg(bb.getLong(), bb.getLong(), bb.getLong()));
+        }
+
+        c.close();
+
+        bb.flip();
+
+        ByteBuffer byteBuffer = output.getByteBuffer();
+        byteBuffer.flip();
+
+        ByteBufferBitInput input = new ByteBufferBitInput(byteBuffer);
+        GorillaDecompressor d = new GorillaDecompressor(input);
+
+        for(int i = 0; i < amountOfPoints; i++) {
+            Agg agg = new Agg(bb.getLong(), bb.getLong(), bb.getLong());
+            Agg a = d.readAgg();
+            assertEquals(agg, a, "Expected agg did not match at point " + i);
+        }
+        assertNull(d.readPair());
+    }
 }

@@ -1,5 +1,6 @@
 package fi.iki.yak.ts.compression.gorilla;
 
+import fi.iki.yak.ts.compression.gorilla.predictors.DifferentialFCM;
 import fi.iki.yak.ts.compression.gorilla.predictors.LastValuePredictor;
 
 /**
@@ -24,6 +25,7 @@ public class GorillaCompressor {
     private BitOutput out;
 
     private ValueCompressor valueCompressor;
+    private ValueCompressor valueCompressor2;
 
     public GorillaCompressor(long timestamp, BitOutput output) {
         this(timestamp, output, new LastValuePredictor());
@@ -34,6 +36,7 @@ public class GorillaCompressor {
         out = output;
         addHeader(timestamp);
         this.valueCompressor = new ValueCompressor(output, predictor);
+        this.valueCompressor2 = new ValueCompressor(output, new DifferentialFCM(1024));
     }
 
     private void addHeader(long timestamp) {
@@ -55,6 +58,17 @@ public class GorillaCompressor {
         }
     }
 
+
+    public void addAgg(Agg agg) {
+        if(storedTimestamp == 0) {
+            writeFirst(agg.getTimestamp(), agg.getLongSum(), agg.getLongCount());
+        } else {
+            compressTimestamp(agg.getTimestamp());
+            valueCompressor.compressValue(agg.getLongSum());
+            valueCompressor2.compressValue(agg.getLongCount());
+        }
+    }
+
     /**
      * Adds a new double value to the series. Note, values must be inserted in order.
      *
@@ -70,12 +84,22 @@ public class GorillaCompressor {
         valueCompressor.compressValue(Double.doubleToRawLongBits(value));
     }
 
+
     private void writeFirst(long timestamp, long value) {
         storedDelta = (int) (timestamp - blockTimestamp);
         storedTimestamp = timestamp;
 
         out.writeBits(storedDelta, FIRST_DELTA_BITS);
         valueCompressor.writeFirst(value);
+    }
+
+    private void writeFirst(long timestamp, long sum, long count) {
+        storedDelta = (int) (timestamp - blockTimestamp);
+        storedTimestamp = timestamp;
+
+        out.writeBits(storedDelta, FIRST_DELTA_BITS);
+        valueCompressor.writeFirst(sum);
+        valueCompressor2.writeFirst(count);
     }
 
     /**
